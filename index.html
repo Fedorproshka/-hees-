@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Игра Змейка (Snake)</title>
+    <!-- Загрузка Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Иконки Lucide -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Глобальные переменные для Firebase (обязательный шаблон)
+        window.firebaseApp = null;
+        window.db = null;
+        window.auth = null;
+        window.userId = null;
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-snake-app';
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                window.firebaseApp = initializeApp(firebaseConfig);
+                window.db = getFirestore(window.firebaseApp);
+                window.auth = getAuth(window.firebaseApp);
+
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(window.auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(window.auth);
+                }
+                window.userId = window.auth.currentUser?.uid || crypto.randomUUID();
+                console.log("Firebase initialized. User ID:", window.userId);
+
+                // Инициализация игры после аутентификации
+                if (typeof window.initGame === 'function') {
+                    window.initGame();
+                }
+
+            } catch (error) {
+                console.error("Error initializing Firebase or signing in:", error);
+                // Продолжаем инициализацию игры, даже если Firebase недоступен
+                if (typeof window.initGame === 'function') {
+                    window.initGame();
+                }
+            }
+        });
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap');
+        
+        body {
+            font-family: 'Orbitron', sans-serif;
+            background-color: #1a1a2e; /* Темно-фиолетовый фон */
+        }
+        
+        .game-container {
+            width: 100%;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+
+        #gameCanvas {
+            border: 4px solid #00f0f0; /* Бирюзовая рамка */
+            box-shadow: 0 0 20px #00f0f0, 0 0 10px rgba(0, 240, 240, 0.5);
+            background-color: #0d0d1a; /* Очень темный фон поля */
+            touch-action: none; /* Предотвращает прокрутку на мобильных устройствах */
+        }
+
+        .control-button {
+            transition: all 0.15s;
+        }
+
+        .control-button:active {
+            transform: scale(0.95);
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+        }
+
+        /* Анимация мигания для Game Over */
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .blinking {
+            animation: blink 1s step-end infinite;
+        }
+
+        /* Стиль для HUD, чтобы вместить три элемента */
+        .hud-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .hud-item span:first-child {
+            font-size: 0.875rem; /* text-sm */
+        }
+        .hud-item span:last-child {
+            font-size: 1.25rem; /* text-xl */
+        }
+
+        /* Адаптация для мобильных устройств, чтобы надписи были меньше */
+        @media (max-width: 640px) {
+             .hud-item span:last-child {
+                font-size: 1.125rem; /* sm:text-lg */
+            }
+        }
+        
+        /* Стилизация модального окна магазина */
+        .modal {
+            background-color: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(5px);
+            z-index: 100;
+        }
+        .modal-content {
+            max-height: 80vh;
+            overflow-y: auto;
+            background-color: #1a1a2e;
+            border: 2px solid #00f0f0;
+            box-shadow: 0 0 30px #00f0f080;
+        }
+        .skin-card {
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+        .skin-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0, 240, 240, 0.5);
+        }
+    </style>
+</head>
+<body class="text-white min-h-screen flex items-center justify-center">
+
+    <div class="game-container flex flex-col items-center">
+        <h1 class="text-3xl font-bold mb-6 text-cyan-400">🐍 Змейка (SNAKE)</h1>
+
+        <!-- HUD: Счет, Скорость и ДЕНЬГИ -->
+        <div class="grid grid-cols-3 gap-2 w-full max-w-[400px] mb-4 p-3 bg-gray-800 rounded-lg shadow-lg">
+            <div class="hud-item">
+                <span class="text-gray-400">Счет:</span> 
+                <span id="scoreDisplay" class="text-yellow-400 font-bold">0</span>
+            </div>
+            <div class="hud-item">
+                <span class="text-gray-400">Скорость:</span> 
+                <span id="speedDisplay" class="text-green-400 font-bold">1</span>
+            </div>
+            <div class="hud-item">
+                <span class="text-gray-400">Деньги:</span> 
+                <span id="moneyDisplay" class="text-lime-400 font-bold">0</span>
+            </div>
+        </div>
+
+        <!-- Кнопки управления и сложности -->
+        <div class="w-full max-w-[400px] mb-4 flex justify-between items-center">
+            <button id="shopBtn" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-full text-sm flex items-center transition duration-150">
+                <i data-lucide="shopping-cart" class="w-4 h-4 mr-2"></i> Магазин
+            </button>
+            <div id="difficultySelector" class="flex justify-center space-x-2">
+                <button data-difficulty="easy" class="diff-btn px-3 py-1 rounded-full bg-green-700 hover:bg-green-600 font-bold text-xs">Легко</button>
+                <button data-difficulty="medium" class="diff-btn px-3 py-1 rounded-full bg-yellow-600 hover:bg-yellow-500 font-bold text-xs">Средне</button>
+                <button data-difficulty="hard" class="diff-btn px-3 py-1 rounded-full bg-red-700 hover:bg-red-600 font-bold text-xs">Сложно</button>
+            </div>
+        </div>
+        
+        <!-- Игровое поле Canvas -->
+        <canvas id="gameCanvas" width="400" height="400" class="max-w-full h-auto"></canvas>
+
+        <!-- Подсказка для управления -->
+        <div id="instructions" class="mt-4 text-center text-gray-400 text-sm">
+            <p>Управление: <span class="text-white">WASD</span> или <span class="text-white">Стрелки</span>. Пауза: <span class="text-white">P</span>.</p>
+        </div>
+
+        <!-- Кнопки управления для мобильных устройств -->
+        <div id="mobileControls" class="mt-6 w-full max-w-[200px] flex flex-col items-center sm:hidden">
+            <button id="upBtn" class="control-button w-16 h-16 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-full mb-2">
+                <i data-lucide="chevron-up" class="w-8 h-8 mx-auto"></i>
+            </button>
+            <div class="flex space-x-2">
+                <button id="leftBtn" class="control-button w-16 h-16 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-full">
+                    <i data-lucide="chevron-left" class="w-8 h-8 mx-auto"></i>
+                </button>
+                <button id="downBtn" class="control-button w-16 h-16 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-full">
+                    <i data-lucide="chevron-down" class="w-8 h-8 mx-auto"></i>
+                </button>
+                <button id="rightBtn" class="control-button w-16 h-16 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-full">
+                    <i data-lucide="chevron-right" class="w-8 h-8 mx-auto"></i>
+                </button>
+            </div>
+            <button id="pauseBtn" class="control-button mt-4 w-32 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-full text-lg">
+                Пауза (P)
+            </button>
+        </div>
+    </div>
+    
+    <!-- МОДАЛЬНОЕ ОКНО МАГАЗИНА -->
+    <div id="shopModal" class="modal fixed inset-0 flex items-center justify-center p-4 hidden">
+        <div class="modal-content w-full max-w-xl rounded-xl p-6 relative">
+            <h2 class="text-3xl font-bold text-cyan-400 mb-4 text-center">МАГАЗИН СКИНОВ</h2>
+            
+            <button id="closeShopBtn" class="absolute top-4 right-4 text-white hover:text-red-500 transition">
+                <i data-lucide="x" class="w-6 h-6"></i>
+            </button>
+
+            <!-- Баланс в магазине -->
+            <div class="text-center mb-6 p-3 bg-gray-900 rounded-lg border border-lime-400">
+                <span class="text-gray-400 text-lg">Ваш баланс:</span> 
+                <span id="shopMoneyDisplay" class="text-2xl text-lime-400 font-bold ml-2">0</span>
+            </div>
+
+            <!-- Скины Змейки -->
+            <h3 class="text-xl font-bold text-white mb-3 border-b border-gray-700 pb-1">Раскраски Змейки</h3>
+            <div id="snakeSkinsContainer" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                <!-- Скины змейки будут сгенерированы здесь -->
+            </div>
+
+            <!-- Скины Еды/Точки -->
+            <h3 class="text-xl font-bold text-white mb-3 border-b border-gray-700 pb-1">Раскраски Еды (Точки)</h3>
+            <div id="foodSkinsContainer" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Скины еды будут сгенерированы здесь -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // === КОНСТАНТЫ И ПЕРЕМЕННЫЕ ИГРЫ ===
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const GRID_SIZE = 20; // Размер сетки (20x20 ячеек)
+        const CELL_SIZE = canvas.width / GRID_SIZE; // Размер одной ячейки (20px)
+
+        // Параметры скорости (общее для всех сложностей)
+        const MIN_DELAY = 60; // Минимальная задержка в мс (быстрая)
+        const SPEED_INCREASE_THRESHOLD = 5; // Увеличивать скорость каждые N очков
+        
+        // Настройки сложности
+        const DIFFICULTIES = {
+            easy: { name: 'Легко', initialDelay: 300, speedDecrement: 10, color: 'text-green-400' },
+            medium: { name: 'Средне', initialDelay: 200, speedDecrement: 15, color: 'text-yellow-400' },
+            hard: { name: 'Сложно', initialDelay: 120, speedDecrement: 25, color: 'text-red-400' },
+        };
+
+        // Состояние игры
+        let snake;
+        let food;
+        let dx = CELL_SIZE; 
+        let dy = 0;
+        let score = 0; 
+        let money = 0; // Деньги
+        
+        // Переменные для текущей сложности
+        let selectedDifficulty = 'medium'; 
+        let currentInitialDelay;
+        let currentSpeedDecrement;
+
+        let currentDelay = DIFFICULTIES[selectedDifficulty].initialDelay; 
+        let gameStatus = 'ready'; // 'ready', 'playing', 'paused', 'gameOver'
+        let gameInterval;
+        let inputQueue = []; 
+
+        // === СОСТОЯНИЕ МАГАЗИНА ===
+        let SKINS_STATE = {
+            // Скины Змейки (headColor - голова, trailColor - тело)
+            'snake-default': { type: 'snake', name: 'Бирюзовый', headColor: '#00f0f0', trailColor: '#009999', price: 0, isUnlocked: true },
+            'snake-gold': { type: 'snake', name: 'Золотой', headColor: '#FFD700', trailColor: '#CCAC00', price: 500, isUnlocked: false },
+            'snake-plasma': { type: 'snake', name: 'Плазма', headColor: '#FF00FF', trailColor: '#AA00AA', price: 1000, isUnlocked: false },
+
+            // Скины Еды (Точки) (color - цвет еды)
+            'food-default': { type: 'food', name: 'Красное Яблоко', color: '#ff4d4d', price: 0, isUnlocked: true },
+            'food-blue': { type: 'food', name: 'Синяя Ягода', color: '#4d4dff', price: 300, isUnlocked: false },
+            'food-green': { type: 'food', name: 'Зеленый Кристалл', color: '#00FF00', price: 800, isUnlocked: false },
+        };
+        let currentSnakeSkinId = 'snake-default';
+        let currentFoodSkinId = 'food-default';
+
+
+        // === ФУНКЦИИ УПРАВЛЕНИЯ СКОРОСТЬЮ И УРОВНЕМ ===
+        function calculateDelay(currentScore) {
+            const speedLevel = Math.floor(currentScore / SPEED_INCREASE_THRESHOLD);
+            let newDelay = currentInitialDelay - (speedLevel * currentSpeedDecrement);
+            return Math.max(MIN_DELAY, newDelay);
+        }
+
+        function getSpeedLevel(currentScore) {
+            return Math.floor(currentScore / SPEED_INCREASE_THRESHOLD) + 1;
+        }
+
+
+        // === ФУНКЦИИ РИСОВАНИЯ (ОБНОВЛЕНО ДЛЯ СКИНОВ) ===
+
+        function drawRect(x, y, color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(x + 1, y + 1, CELL_SIZE - 2, CELL_SIZE - 2);
+        }
+
+        function drawSnake() {
+            const snakeSkin = SKINS_STATE[currentSnakeSkinId];
+
+            // Голова
+            drawRect(snake[0].x, snake[0].y, snakeSkin.headColor); 
+
+            // Тело
+            for (let i = 1; i < snake.length; i++) {
+                drawRect(snake[i].x, snake[i].y, snakeSkin.trailColor); 
+            }
+        }
+
+        function drawFood() {
+            const foodSkin = SKINS_STATE[currentFoodSkinId];
+            drawRect(food.x, food.y, foodSkin.color); 
+        }
+
+        function drawGameStatus() {
+            // Очищаем область сообщения
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, canvas.height / 3, canvas.width, canvas.height / 3);
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '24px Orbitron';
+            ctx.textAlign = 'center';
+
+            let message = '';
+            let subMessage = '';
+            let isBlinking = false;
+
+            switch (gameStatus) {
+                case 'ready':
+                    message = 'ЗМЕЙКА';
+                    subMessage = 'Нажмите P или любую стрелку для старта';
+                    isBlinking = true;
+                    break;
+                case 'paused':
+                    message = 'ПАУЗА';
+                    subMessage = 'Нажмите P для продолжения';
+                    isBlinking = true;
+                    break;
+                case 'gameOver':
+                    message = 'ИГРА ОКОНЧЕНА!';
+                    subMessage = `Ваш счет: ${score}, Деньги: ${money}. Нажмите R для рестарта.`;
+                    isBlinking = true;
+                    break;
+            }
+
+            const statusDiv = document.getElementById('instructions');
+            if (isBlinking) {
+                statusDiv.classList.add('blinking');
+            } else {
+                statusDiv.classList.remove('blinking');
+            }
+
+            ctx.fillText(message, canvas.width / 2, canvas.height / 2 - 10);
+            ctx.font = '14px Orbitron';
+            ctx.fillText(subMessage, canvas.width / 2, canvas.height / 2 + 20);
+        }
+
+        function updateHUD() {
+            // Обновление счета и денег
+            document.getElementById('scoreDisplay').textContent = score; 
+            document.getElementById('moneyDisplay').textContent = money; 
+            document.getElementById('speedDisplay').textContent = getSpeedLevel(score);
+            
+            // Обновляем отображение сложности для счетчика скорости
+            const speedEl = document.getElementById('speedDisplay');
+            speedEl.classList.remove('text-green-400', 'text-yellow-400', 'text-red-400');
+            speedEl.classList.add(DIFFICULTIES[selectedDifficulty].color);
+            
+            lucide.createIcons();
+        }
+
+        function clearCanvas() {
+            ctx.fillStyle = '#0d0d1a'; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+
+        // === ЛОГИКА ИГРЫ ===
+
+        function resetGame() {
+            const settings = DIFFICULTIES[selectedDifficulty];
+            currentInitialDelay = settings.initialDelay;
+            currentSpeedDecrement = settings.speedDecrement;
+
+            const startX = Math.floor(GRID_SIZE / 2) * CELL_SIZE;
+            const startY = Math.floor(GRID_SIZE / 2) * CELL_SIZE;
+
+            snake = [
+                { x: startX, y: startY },
+                { x: startX - CELL_SIZE, y: startY },
+                { x: startX - 2 * CELL_SIZE, y: startY }
+            ];
+
+            dx = CELL_SIZE;
+            dy = 0;
+            score = 0; 
+            money = 0; 
+            currentDelay = currentInitialDelay; 
+            gameStatus = 'ready';
+            inputQueue = [];
+            clearInterval(gameInterval);
+
+            placeFood();
+            updateHUD();
+            updateDifficultyButtons(); 
+            clearCanvas();
+            drawSnake();
+            drawFood();
+            drawGameStatus();
+        }
+
+        function placeFood() {
+            let newFood;
+            let onSnake;
+            do {
+                onSnake = false;
+                newFood = {
+                    x: Math.floor(Math.random() * GRID_SIZE) * CELL_SIZE,
+                    y: Math.floor(Math.random() * GRID_SIZE) * CELL_SIZE
+                };
+                for (let segment of snake) {
+                    if (segment.x === newFood.x && segment.y === newFood.y) {
+                        onSnake = true;
+                        break;
+                    }
+                }
+            } while (onSnake);
+
+            food = newFood;
+        }
+
+        function advanceSnake() {
+            if (inputQueue.length > 0) {
+                const newDir = inputQueue.shift();
+                dx = newDir.dx;
+                dy = newDir.dy;
+            }
+
+            const head = { x: snake[0].x + dx, y: snake[0].y + dy };
+            snake.unshift(head);
+
+            // Проверка, съела ли змейка еду (ЛОГИКА СЧЕТА И ДЕНЕГ)
+            if (head.x === food.x && head.y === food.y) {
+                score += 10; 
+                money += 50; // Начисление денег (50 за 10 очков)
+                
+                const newDelay = calculateDelay(score);
+                
+                if (newDelay !== currentDelay) {
+                    currentDelay = newDelay;
+                    clearInterval(gameInterval);
+                    gameInterval = setInterval(gameLoop, currentDelay);
+                }
+
+                updateHUD();
+                placeFood(); 
+                
+            } else {
+                snake.pop();
+            }
+        }
+
+        function checkCollision() {
+            const head = snake[0];
+
+            const hitWall = head.x < 0 || head.x >= canvas.width || head.y < 0 || head.y >= canvas.height;
+
+            let hitSelf = false;
+            for (let i = 1; i < snake.length; i++) {
+                if (head.x === snake[i].x && head.y === snake[i].y) {
+                    hitSelf = true;
+                    break;
+                }
+            }
+
+            if (hitWall || hitSelf) {
+                gameStatus = 'gameOver';
+                clearInterval(gameInterval);
+                drawGameStatus();
+            }
+        }
+
+        function gameLoop() {
+            if (gameStatus !== 'playing') return;
+
+            advanceSnake();
+            checkCollision();
+
+            clearCanvas();
+            drawFood();
+            drawSnake();
+        }
+
+
+        // === МАГАЗИН: ЛОГИКА И UI ===
+
+        function buySkin(skinId) {
+            const skin = SKINS_STATE[skinId];
+            if (!skin) return;
+
+            if (money >= skin.price) {
+                money -= skin.price;
+                skin.isUnlocked = true;
+                equipSkin(skinId, skin.type);
+                updateShopUI();
+                updateHUD();
+            } else {
+                // В реальной игре здесь было бы уведомление
+                console.log(`Недостаточно денег для покупки ${skin.name}`);
+            }
+        }
+
+        function equipSkin(skinId, skinType) {
+            const skin = SKINS_STATE[skinId];
+            if (!skin || !skin.isUnlocked) return;
+
+            if (skinType === 'snake') {
+                currentSnakeSkinId = skinId;
+            } else if (skinType === 'food') {
+                currentFoodSkinId = skinId;
+            }
+            // Обновляем игру для отображения нового скина немедленно
+            clearCanvas();
+            drawFood();
+            drawSnake();
+            updateShopUI();
+        }
+        
+        function createSkinCard(skinId, skin) {
+            const isEquipped = (skin.type === 'snake' && currentSnakeSkinId === skinId) || 
+                               (skin.type === 'food' && currentFoodSkinId === skinId);
+            
+            const card = document.createElement('div');
+            card.className = `skin-card p-4 rounded-lg border-2 ${isEquipped ? 'border-lime-400 bg-gray-900' : 'border-gray-700 bg-gray-800'}`;
+            card.dataset.id = skinId;
+
+            let mainColor = skin.color || skin.headColor;
+            
+            // Превью скина
+            const preview = `<div class="w-full h-8 mb-3 rounded-md" style="background: linear-gradient(to right, ${mainColor} 0%, ${skin.trailColor || mainColor} 100%); border: 1px solid #333;"></div>`;
+
+            let buttonHTML;
+
+            if (skin.isUnlocked) {
+                if (isEquipped) {
+                    buttonHTML = `<button class="w-full py-2 bg-gray-600 text-gray-300 font-bold rounded-md cursor-default" disabled>Экипировано</button>`;
+                } else {
+                    buttonHTML = `<button onclick="window.equipSkin('${skinId}', '${skin.type}')" class="w-full py-2 bg-blue-600 hover:bg-blue-700 font-bold rounded-md transition duration-150">Экипировать</button>`;
+                }
+            } else {
+                buttonHTML = `
+                    <button onclick="window.buySkin('${skinId}')" class="w-full py-2 bg-lime-600 hover:bg-lime-700 font-bold rounded-md transition duration-150 flex items-center justify-center">
+                        <i data-lucide="coin" class="w-4 h-4 mr-2"></i> ${skin.price}
+                    </button>
+                `;
+            }
+
+            card.innerHTML = `
+                ${preview}
+                <h4 class="text-lg font-bold text-white mb-1">${skin.name}</h4>
+                <p class="text-gray-400 text-sm mb-3">${skin.type === 'snake' ? 'Змейка' : 'Еда'}</p>
+                ${buttonHTML}
+            `;
+            return card;
+        }
+
+        function updateShopUI() {
+            const snakeContainer = document.getElementById('snakeSkinsContainer');
+            const foodContainer = document.getElementById('foodSkinsContainer');
+            const shopMoneyDisplay = document.getElementById('shopMoneyDisplay');
+
+            // Обновление баланса
+            shopMoneyDisplay.textContent = money;
+            
+            snakeContainer.innerHTML = '';
+            foodContainer.innerHTML = '';
+
+            for (const [id, skin] of Object.entries(SKINS_STATE)) {
+                const card = createSkinCard(id, skin);
+                if (skin.type === 'snake') {
+                    snakeContainer.appendChild(card);
+                } else {
+                    foodContainer.appendChild(card);
+                }
+            }
+            lucide.createIcons();
+        }
+
+        function openShop() {
+            if (gameStatus === 'playing') togglePause(); // Пауза, если игра активна
+            document.getElementById('shopModal').classList.remove('hidden');
+            updateShopUI(); // Обновляем UI магазина при открытии
+        }
+
+        function closeShop() {
+            document.getElementById('shopModal').classList.add('hidden');
+        }
+
+        // Делаем функции магазина доступными глобально для кнопок в HTML
+        window.buySkin = buySkin;
+        window.equipSkin = equipSkin;
+
+
+        // === ОБРАБОТКА ВВОДА И УПРАВЛЕНИЯ ===
+
+        function changeDirection(newDx, newDy) {
+            // Если магазин открыт, игнорируем
+            if (!document.getElementById('shopModal').classList.contains('hidden')) return; 
+
+            if (gameStatus === 'ready' || gameStatus === 'paused') {
+                if (gameStatus === 'ready') startGame();
+                else if (gameStatus === 'paused') {
+                    gameStatus = 'playing';
+                    startGame(); 
+                }
+            }
+
+            const isHorizontalChange = (newDx !== 0 && dx === -newDx) && newDy === 0 && dy === 0;
+            const isVerticalChange = (newDy !== 0 && dy === -newDy) && newDx === 0 && dx === 0;
+
+            if (isHorizontalChange || isVerticalChange) {
+                return;
+            }
+
+            if (inputQueue.length === 0) {
+                 inputQueue.push({ dx: newDx, dy: newDy });
+            }
+        }
+
+        function handleKeyPress(event) {
+            const key = event.key;
+            const isShopOpen = !document.getElementById('shopModal').classList.contains('hidden');
+
+            if (isShopOpen) {
+                if (key === 'Escape') closeShop();
+                return;
+            }
+
+            if (gameStatus === 'gameOver' && (key === 'r' || key === 'R')) {
+                resetGame();
+                return;
+            }
+
+            switch (key) {
+                case 'ArrowUp':
+                case 'w':
+                case 'W':
+                    changeDirection(0, -CELL_SIZE);
+                    break;
+                case 'ArrowDown':
+                case 's':
+                case 'S':
+                    changeDirection(0, CELL_SIZE);
+                    break;
+                case 'ArrowLeft':
+                case 'a':
+                case 'A':
+                    changeDirection(-CELL_SIZE, 0);
+                    break;
+                case 'ArrowRight':
+                case 'd':
+                case 'D':
+                    changeDirection(CELL_SIZE, 0);
+                    break;
+                case 'p':
+                case 'P':
+                case ' ': // Пробел для удобства
+                    togglePause();
+                    break;
+            }
+        }
+
+        function togglePause() {
+            if (document.getElementById('shopModal').classList.contains('hidden')) {
+                 if (gameStatus === 'playing') {
+                    gameStatus = 'paused';
+                    clearInterval(gameInterval);
+                    drawGameStatus();
+                } else if (gameStatus === 'paused') {
+                    gameStatus = 'playing';
+                    startGame(); 
+                } else if (gameStatus === 'ready') {
+                    startGame();
+                }
+            }
+        }
+
+        function startGame() {
+            if (gameStatus === 'playing') return;
+            gameStatus = 'playing';
+            clearInterval(gameInterval);
+            gameInterval = setInterval(gameLoop, currentDelay);
+            document.getElementById('instructions').classList.remove('blinking');
+        }
+
+
+        // === УПРАВЛЕНИЕ СЛОЖНОСТЬЮ И МОБИЛЬНОЕ УПРАВЛЕНИЕ ===
+
+        function setupDifficultySelector() {
+            const buttons = document.querySelectorAll('.diff-btn');
+            buttons.forEach(button => {
+                button.addEventListener('click', (e) => {
+                    if (gameStatus === 'playing') return; 
+                    
+                    const newDifficulty = e.target.dataset.difficulty;
+                    if (newDifficulty !== selectedDifficulty) {
+                        selectedDifficulty = newDifficulty;
+                        resetGame(); 
+                    }
+                });
+            });
+            updateDifficultyButtons(); 
+        }
+        
+        function updateDifficultyButtons() {
+            const buttons = document.querySelectorAll('.diff-btn');
+            buttons.forEach(button => {
+                const diff = button.dataset.difficulty;
+                
+                button.classList.remove('border-2', 'border-yellow-300', 'border-green-300', 'border-red-300');
+                
+                if (diff === selectedDifficulty) {
+                    let borderColor = 'border-yellow-300';
+                    if (diff === 'easy') borderColor = 'border-green-300';
+                    if (diff === 'hard') borderColor = 'border-red-300';
+                    
+                    button.classList.add('border-2', borderColor);
+                }
+            });
+        }
+
+        function setupMobileControls() {
+            document.getElementById('upBtn').addEventListener('click', () => changeDirection(0, -CELL_SIZE));
+            document.getElementById('downBtn').addEventListener('click', () => changeDirection(0, CELL_SIZE));
+            document.getElementById('leftBtn').addEventListener('click', () => changeDirection(-CELL_SIZE, 0));
+            document.getElementById('rightBtn').addEventListener('click', () => changeDirection(CELL_SIZE, 0));
+            document.getElementById('pauseBtn').addEventListener('click', togglePause);
+        }
+        
+        // Добавляем обработчик свайпов на канвас
+        let touchstartX = 0;
+        let touchstartY = 0;
+
+        canvas.addEventListener('touchstart', e => {
+            if (gameStatus === 'ready') startGame();
+            touchstartX = e.changedTouches[0].screenX;
+            touchstartY = e.changedTouches[0].screenY;
+            e.preventDefault();
+        });
+
+        canvas.addEventListener('touchend', e => {
+            let touchendX = e.changedTouches[0].screenX;
+            let touchendY = e.changedTouches[0].screenY;
+            handleGesture(touchstartX, touchendX, touchstartY, touchendY);
+            e.preventDefault();
+        });
+
+        function handleGesture(startX, endX, startY, endY) {
+            const diffX = endX - startX;
+            const diffY = endY - startY;
+
+            if (Math.abs(diffX) > Math.abs(diffY)) {
+                if (Math.abs(diffX) < CELL_SIZE) return; 
+                if (diffX > 0) {
+                    changeDirection(CELL_SIZE, 0); 
+                } else {
+                    changeDirection(-CELL_SIZE, 0); 
+                }
+            } else {
+                if (Math.abs(diffY) < CELL_SIZE) return; 
+                if (diffY > 0) {
+                    changeDirection(0, CELL_SIZE); 
+                } else {
+                    changeDirection(0, -CELL_SIZE); 
+                }
+            }
+        }
+
+
+        // === ИНИЦИАЛИЗАЦИЯ ===
+
+        window.initGame = function() {
+            document.addEventListener('keydown', handleKeyPress);
+            setupMobileControls();
+            setupDifficultySelector();
+            
+            // Настройка кнопок магазина
+            document.getElementById('shopBtn').addEventListener('click', openShop);
+            document.getElementById('closeShopBtn').addEventListener('click', closeShop);
+            
+            resetGame(); 
+        };
+
+        if (typeof __firebase_config === 'undefined' || __firebase_config === '{}') {
+            document.addEventListener('DOMContentLoaded', window.initGame);
+        }
+
+    </script>
+</body>
+</html>
